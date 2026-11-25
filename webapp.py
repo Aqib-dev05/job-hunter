@@ -1,115 +1,84 @@
-"""The Job Hunter window: the React page in ui/dist, shown by pywebview in Microsoft Edge WebView2.
+"""The Job Hunter window: the React page in ui/dist, shown by pywebview (GTK + WebKit, or Qt + QtWebEngine).
 
-Run from source:   python -I webapp.py        (build the page once first:  cd ui && npm ci && npm run build)
-Installed:         JobHunter.exe              (jobhunter.py starts this)
+Run from source:   ./run.sh        (sets everything up the first time)
+or by hand:        python -I webapp.py        (build the page once first:  cd ui && npm ci && npm run build)
 
-WebView2 is part of Windows 11 and of every up-to-date Windows 10. The installer adds it when it is missing,
-and this file says so in a plain message box instead of failing silently.
+pywebview needs one GUI toolkit on Linux. The easiest is GTK with WebKit2:
+    Debian / Ubuntu:   sudo apt install python3-gi gir1.2-webkit2-4.1
+    Fedora:            sudo dnf install python3-gobject webkit2gtk4.1
+    Arch:              sudo pacman -S python-gobject webkit2gtk-4.1
+Or Qt, which pip can install by itself:   python -m pip install "pywebview[qt]"
+When none is there, this file says so in plain words instead of failing with a stack trace.
 """
 import os
+import shutil
+import subprocess
 import sys
-import webbrowser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import backend  # noqa: E402
 import bot  # noqa: E402
 
-WEBVIEW2_DOWNLOAD = "https://developer.microsoft.com/microsoft-edge/webview2/#download-section"
-WEBVIEW2_ID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"  # the Evergreen WebView2 runtime
+HERE = os.path.dirname(os.path.abspath(__file__))
+NO_TOOLKIT = ("Job Hunter needs a GUI toolkit for its window, and none was found.\n\n"
+              "Easiest (GTK + WebKit):\n"
+              "    Debian / Ubuntu:  sudo apt install python3-gi gir1.2-webkit2-4.1\n"
+              "    Fedora:           sudo dnf install python3-gobject webkit2gtk4.1\n"
+              "    Arch:             sudo pacman -S python-gobject webkit2gtk-4.1\n"
+              "  (the virtual environment must see system packages: ./run.sh already does)\n\n"
+              "Or Qt:\n"
+              "    python -m pip install \"pywebview[qt]\"")
 
 
 def page():
-    """index.html of the built React page: inside the installed app, or ui/dist next to the scripts."""
-    base = sys._MEIPASS if bot.FROZEN else os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "ui", "dist", "index.html")
-
-
-def message(text, title="Job Hunter", yes_no=False):
-    """A native Windows message box (works before any window exists). Returns True for Yes/OK."""
-    try:
-        import ctypes
-        flags = (0x4 if yes_no else 0x0) | 0x40  # Yes/No or OK, information icon
-        return ctypes.windll.user32.MessageBoxW(None, text, title, flags) in (1, 6)
-    except (AttributeError, OSError):
-        print(text, file=sys.stderr)
-        return False
-
-
-def webview2_installed():
-    try:
-        import winreg
-    except ImportError:
-        return True  # not Windows: pywebview picks its own engine
-    for root, path in ((winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_ID}"),
-                       (winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_ID}"),
-                       (winreg.HKEY_CURRENT_USER, rf"Software\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_ID}")):
-        try:
-            with winreg.OpenKey(root, path) as k:
-                version = winreg.QueryValueEx(k, "pv")[0]
-            if version and version != "0.0.0.0":
-                return True
-        except OSError:
-            continue
-    return False
+    """index.html of the built React page, in ui/dist next to the scripts."""
+    return os.path.join(HERE, "ui", "dist", "index.html")
 
 
 def icon_file():
-    """The app icon: next to JobHunter.exe when installed, in installer/ when run from source."""
-    base = sys._MEIPASS if bot.FROZEN else os.path.join(os.path.dirname(os.path.abspath(__file__)), "installer")
-    return os.path.join(base, "icon.ico")
+    """The app icon (the same picture the page uses)."""
+    return os.path.join(HERE, "ui", "public", "icon.png")
 
 
-def windows_light_theme():
-    """True when Windows apps use the light theme (so the window does not flash dark while it loads)."""
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
-            return bool(winreg.QueryValueEx(k, "AppsUseLightTheme")[0])
-    except (ImportError, OSError):
-        return False
-
-
-def own_taskbar_identity():
-    """Group the window under Job Hunter on the taskbar, not under python.exe or a console."""
-    try:
-        import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CodeProjectsOfficial.JobHunter")
-    except (AttributeError, OSError):
-        pass
-
-
-def set_window_icon(window):
-    """Put the Job Hunter icon on the title bar and the taskbar button (from source it would be Python's)."""
-    try:
-        import ctypes
-        path = icon_file()
-        if not os.path.exists(path):
+def message(text, title="Job Hunter"):
+    """Tell the person something before any window exists: on the terminal, and in a dialog when one can be shown
+    (the app is often started from a launcher, where the terminal is invisible)."""
+    print(text, file=sys.stderr)
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return
+    for cmd in (["zenity", "--info", "--no-markup", "--title", title, "--text", text],
+                ["kdialog", "--title", title, "--msgbox", text]):
+        if shutil.which(cmd[0]):
+            try:
+                subprocess.run(cmd, timeout=600, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
             return
-        user32 = ctypes.windll.user32
-        user32.LoadImageW.restype = ctypes.c_void_p
-        user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
-        hwnd = ctypes.c_void_p(window.native.Handle.ToInt64())
-        for which, size in ((0, 16), (1, 256)):  # ICON_SMALL (title bar), ICON_BIG (taskbar, Alt+Tab)
-            icon = user32.LoadImageW(None, path, 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
-            if icon:
-                user32.SendMessageW(hwnd, 0x80, ctypes.c_void_p(which), ctypes.c_void_p(icon))  # WM_SETICON
-    except Exception:  # never stop the window over its icon
-        pass
+
+
+def desktop_light_theme():
+    """True when the desktop uses a light theme (so the window does not flash dark while it loads)."""
+    def gsetting(key):
+        try:
+            r = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", key], capture_output=True,
+                               text=True, timeout=2)
+            return r.stdout.strip().strip("'").lower() if r.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+    scheme = gsetting("color-scheme")
+    if scheme == "prefer-dark":
+        return False
+    if scheme == "prefer-light":
+        return True
+    theme = gsetting("gtk-theme")
+    return bool(theme) and "dark" not in theme
 
 
 def main():
     index = page()
     if not os.path.exists(index):
-        message("The Job Hunter window files are missing.\n\nFrom source, build them once:\n"
-                "    cd ui\n    npm ci\n    npm run build\n\nThe installed app always includes them: "
-                f"reinstall it from {backend.DOWNLOAD_PAGE}")
-        return
-    if not webview2_installed():
-        if message("Job Hunter needs Microsoft Edge WebView2, a free part of Windows that is missing on this PC."
-                   "\n\nOpen Microsoft's download page now? Install the \"Evergreen Bootstrapper\", then start Job "
-                   "Hunter again.", yes_no=True):
-            webbrowser.open(WEBVIEW2_DOWNLOAD)
+        message("The Job Hunter window files are missing.\n\nBuild them once:\n"
+                "    cd ui\n    npm ci\n    npm run build\n\n(./run.sh does this for you.)")
         return
     try:
         import webview
@@ -118,18 +87,20 @@ def main():
                 "    python -m pip install -r requirements.txt")
         return
 
-    own_taskbar_identity()
     api = backend.Api()
     theme = api.prefs()["theme"]
-    light = theme == "light" or (theme == "auto" and windows_light_theme())
+    light = theme == "light" or (theme == "auto" and desktop_light_theme())
     window = webview.create_window(
         f"Job Hunter {bot.VERSION}", index, js_api=api, width=1400, height=880, min_size=(1040, 660), maximized=True,
         background_color="#f3f3f5" if light else "#1b1b1e", text_select=True)
-    window.events.shown += lambda: set_window_icon(window)
     api._attach(window)
-    # The local page is served from 127.0.0.1, so the clipboard and other modern browser features work.
-    webview.start(gui="edgechromium", http_server=True, debug=os.environ.get("JOBHUNTER_DEBUG") == "1",
-                  private_mode=True)
+    icon = icon_file()
+    try:
+        # The local page is served from 127.0.0.1, so the clipboard and other modern browser features work.
+        webview.start(http_server=True, debug=os.environ.get("JOBHUNTER_DEBUG") == "1", private_mode=True,
+                      icon=icon if os.path.exists(icon) else None)
+    except webview.util.WebViewException as e:
+        message(f"{NO_TOOLKIT}\n\n({e})")
 
 
 if __name__ == "__main__":

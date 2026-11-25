@@ -13,9 +13,11 @@ import imaplib
 import json
 import os
 import re
+import shlex
+import shutil
+import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -27,30 +29,21 @@ import webbrowser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bot  # noqa: E402
 
-# Your files live in bot.HERE: next to the scripts, or %APPDATA%\Job Hunter for the installed JobHunter.exe.
-FROZEN, HERE = bot.FROZEN, bot.HERE
+# Your files live in bot.HERE: next to the scripts, or in JOBHUNTER_HOME when you set it.
+HERE = bot.HERE
 JOBS_FILE, TRACKER, LOCK = bot.JOBS_FILE, bot.TRACKER, bot.LOCK
 CONFIG = os.path.join(HERE, "config.json")
 PROFILE = os.path.join(HERE, "profile.json")
 UI_PREFS = os.path.join(HERE, "ui.json")  # window-only choices (sounds, theme); the bot never reads it
 RELEASES = f"https://github.com/{bot.REPO}/releases/latest"
-SETUP_URL = f"{RELEASES}/download/JobHunterSetup.exe"  # the installer file itself is hosted on GitHub
-DOWNLOAD_PAGE = "https://www.codeprojectsofficial.com/tools"
+DOWNLOAD_PAGE = f"https://github.com/{bot.REPO}"
 GUIDE_URL = f"https://github.com/{bot.REPO}#readme"
 ISSUES_URL = f"https://github.com/{bot.REPO}/issues/new/choose"
-TASK = "Remote Job Hunter"
-NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-# pythonw has no console; use the console python next to it, hidden, so we can read its output.
-# JobHunter.exe runs the bot itself when started with --bot.
-PY = os.path.join(os.path.dirname(sys.executable), "python.exe")
-if not os.path.exists(PY):
-    PY = sys.executable
-BOT = [sys.executable, "--bot"] if FROZEN else [PY, "-I", "-X", "utf8", "-u", os.path.join(bot.CODE, "bot.py")]
-# What the 30-minute scheduled task runs: no console window either way.
-PYW = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-TASK_RUN = (f'"{sys.executable}" --bot' if FROZEN
-            else f'"{PYW if os.path.exists(PYW) else sys.executable}" -I "{os.path.join(bot.CODE, "bot.py")}"')
+CRON_TAG = "# Remote Job Hunter"  # marks the crontab line Auto-run owns; everything else in the crontab is left alone
+BOT_PY = os.path.join(bot.CODE, "bot.py")
+BOT = [sys.executable, "-I", "-X", "utf8", "-u", BOT_PY]
+# What the 30-minute cron job runs.
+CRON_RUN = f"{shlex.join(BOT)} >/dev/null 2>&1"
 
 # id -> (label, statuses shown)
 VIEWS = {
@@ -234,26 +227,6 @@ def latest_release():
         return None
 
 
-def download_setup(progress):
-    """Download the newest installer to the temp folder and return its path. progress(percent) is called as it
-    comes in. Raises OSError/ValueError when the download fails or is not an installer."""
-    path = os.path.join(tempfile.gettempdir(), "JobHunterSetup-update.exe")
-    with urllib.request.urlopen(urllib.request.Request(SETUP_URL, headers=bot.UA), timeout=60) as r, \
-            open(path + ".part", "wb") as f:
-        size, got, shown = int(r.headers.get("Content-Length") or 0), 0, -1
-        while chunk := r.read(256 * 1024):
-            f.write(chunk)
-            got += len(chunk)
-            if size and got * 100 // size != shown:
-                shown = got * 100 // size
-                progress(shown)
-    with open(path + ".part", "rb") as f:
-        if f.read(2) != b"MZ" or got < 1_000_000 or (size and got != size):
-            raise ValueError("the download is not a complete installer")
-    os.replace(path + ".part", path)
-    return path
-
-
 def tracker_files():
     """{job id: (cv, cover letter)} for every job with a CV in tracker.csv; the newest CV that still exists."""
     try:
@@ -275,18 +248,118 @@ def job_files(job_id):
     return tracker_files().get(job_id, (None, None))
 
 
+def process_command(pid):
+    """The command line of a process as a list of words, or [] when it does not exist or cannot be read."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+    except OSError:
+        pass
+    try:  # no /proc (macOS)
+        r = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return r.stdout.split() if r.returncode == 0 else []
+
+
 def lock_owner():
     """PID of the bot run that holds bot.lock, or None when no live bot process owns it."""
     try:
         with open(LOCK, encoding="utf-8") as f:
             pid = int(f.read().strip())
-        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True,
-                           text=True, creationflags=NO_WINDOW, timeout=10)
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+    except (OSError, ValueError):
         return None
-    # Windows reuses PIDs: only a Python or Job Hunter process can be the bot.
-    name = r.stdout.split(",")[0].strip().strip('"').lower()
-    return pid if name in ("python.exe", "pythonw.exe", "jobhunter.exe") else None
+    # PIDs get reused: only a process that is running bot.py can be the bot.
+    return pid if any(os.path.basename(a) == "bot.py" for a in process_command(pid)) else None
+
+
+def child_pids(pid):
+    """Direct children of a process."""
+    kids = []
+    try:
+        for name in os.listdir("/proc"):
+            if name.isdigit():
+                try:
+                    with open(f"/proc/{name}/stat", encoding="utf-8", errors="replace") as f:
+                        # "pid (comm) state ppid ...": comm may contain spaces or parentheses, so cut after the last ")"
+                        if int(f.read().rpartition(")")[2].split()[1]) == pid:
+                            kids.append(int(name))
+                except (OSError, ValueError, IndexError):
+                    continue
+        return kids
+    except OSError:
+        pass
+    try:  # no /proc (macOS)
+        r = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True, timeout=10)
+        return [int(n) for n in r.stdout.split()]
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+
+
+def kill_tree(pid):
+    """Stop a process and everything it started (the bot starts cv.py, which starts a headless browser)."""
+    tree, todo = [], [pid]
+    while todo:
+        p = todo.pop()
+        tree.append(p)
+        todo += child_pids(p)
+    for p in reversed(tree):  # children first
+        try:
+            os.kill(p, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.time() + 3
+    while time.time() < deadline and any(bot.pid_alive(p) and not is_zombie(p) for p in tree):
+        time.sleep(0.1)
+    for p in tree:
+        if bot.pid_alive(p) and not is_zombie(p):
+            try:
+                os.kill(p, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+def is_zombie(pid):
+    """A process that has exited but whose parent has not collected it yet: it is as good as gone."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as f:
+            return f.read().rpartition(")")[2].split()[0] == "Z"
+    except (OSError, IndexError):
+        return False
+
+
+def open_file(path):
+    """Open a file or folder with the desktop's default program (xdg-open; `open` on macOS). True if it started."""
+    opener = shutil.which("open" if sys.platform == "darwin" else "xdg-open")
+    if not opener:
+        return False
+    try:
+        subprocess.Popen([opener, path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except OSError:
+        return False
+
+
+def crontab_lines():
+    """The user's crontab as a list of lines, or None when cron is not installed."""
+    if not shutil.which("crontab"):
+        return None
+    try:
+        r = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout.splitlines() if r.returncode == 0 else []  # exit 1 = this user has no crontab yet
+
+
+def write_crontab(lines):
+    """Install the lines as the user's crontab. Returns None, or what went wrong."""
+    try:
+        r = subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", capture_output=True, text=True,
+                           timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return str(e)
+    return (r.stderr or r.stdout).strip() or "cron refused the new crontab." if r.returncode else None
 
 
 def test_gmail(address, password, host="imap.gmail.com"):
@@ -341,7 +414,7 @@ def test_gemini(key):
 
 # ---------- bot.py output -> structured log entries ----------
 
-FILE_PATH = re.compile(r"[A-Za-z]:\\.+?\.(?:pdf|txt|json)\b")
+FILE_PATH = re.compile(r"(?<![\w:/.])/[^\n]+?\.(?:pdf|txt|json)\b")  # an absolute path, not a piece of a URL
 
 
 def parse_line(line):
@@ -493,7 +566,7 @@ class Api:
         self._watch["jobs"] = os.path.getmtime(JOBS_FILE) if os.path.exists(JOBS_FILE) else 0
         threading.Thread(target=bot.ping_usage, daemon=True).start()  # anonymous, once a day; see bot.ping_usage
         return {
-            "version": bot.VERSION, "frozen": FROZEN, "dataFolder": HERE, "configFile": CONFIG,
+            "version": bot.VERSION, "frozen": False, "dataFolder": HERE, "configFile": CONFIG,
             "downloadPage": DOWNLOAD_PAGE, "repo": f"https://github.com/{bot.REPO}",
             "filter": self.filter_state(cfg), "presets": list(PRESETS),
             "openTo": [{"value": k, "label": v} for k, v in OPEN_TO_LABEL.items()],
@@ -555,7 +628,7 @@ class Api:
         ]
 
     def prefs(self):
-        """Window choices. The theme follows Windows (auto) until you pick one."""
+        """Window choices. The theme follows the desktop (auto) until you pick one."""
         p = read_json(UI_PREFS, {})
         return {"sounds": bool(p.get("sounds", True)),
                 "theme": p["theme"] if p.get("theme") in ("dark", "light", "auto") else "auto"}
@@ -566,7 +639,8 @@ class Api:
         return p
 
     def diagnostics(self):
-        """For a problem report: version, Windows and the last runs. Never keys, passwords, emails or the CV."""
+        """For a problem report: version, operating system and the last runs. Never keys, passwords, emails or the CV.
+        (The key is still called "windows": the page reads it by that name.)"""
         import platform
         try:
             with open(bot.RUNS_LOG, encoding="utf-8", errors="replace") as f:
@@ -574,7 +648,7 @@ class Api:
         except OSError:
             runs = ""
         return {"version": bot.VERSION, "windows": f"{platform.system()} {platform.release()} ({platform.version()})",
-                "installed": FROZEN, "runs": re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", "<email>", runs)}
+                "installed": False, "runs": re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", "<email>", runs)}
 
     def set_usage_stats(self, on):
         """Turn the anonymous daily active-user ping on or off (config.json, shared with Auto-run)."""
@@ -670,7 +744,7 @@ class Api:
             try:
                 self._proc = subprocess.Popen([*BOT, *args], cwd=bot.CODE, stdout=subprocess.PIPE,
                                               stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                                              errors="replace", creationflags=NO_WINDOW,
+                                              errors="replace", start_new_session=True,
                                               env={**os.environ, "JOBHUNTER_LIVE": "1"})
             except OSError as e:
                 return {"ok": False, "error": f"Job Hunter could not start its search engine ({e.strerror or e})."}
@@ -703,21 +777,6 @@ class Api:
         self._proc = None
         self._emit("run", {"state": "end", "what": what, "stopped": self._stopped, "code": proc.returncode,
                            "summary": summary, "profile": self.profile(), "setup": self.setup()})
-        self._flash()
-
-    def _flash(self):
-        """Flash the taskbar button when a run ends while you are in another window."""
-        try:
-            import ctypes
-            hwnd = self._window.native.Handle.ToInt64()
-
-            class FLASHWINFO(ctypes.Structure):
-                _fields_ = [("cbSize", ctypes.c_uint), ("hwnd", ctypes.c_void_p), ("dwFlags", ctypes.c_uint),
-                            ("uCount", ctypes.c_uint), ("dwTimeout", ctypes.c_uint)]
-            info = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd, 0x3 | 0xC, 0, 0)  # all, until the window is focused
-            ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
-        except Exception:
-            pass
 
     def save_filter(self, f):
         """Check the filter and write it to config.json. Returns {"error": ...} when it is not valid."""
@@ -808,8 +867,7 @@ class Api:
                 return {"state": "cleared"}
             return {"state": "idle"}
         self._stopped = self._proc is not None
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
-                       creationflags=NO_WINDOW, timeout=15)
+        kill_tree(pid)
         try:
             os.remove(LOCK)
         except OSError:
@@ -863,8 +921,7 @@ class Api:
     def open_job_files(self, job_id):
         opened = 0
         for path in job_files(job_id):
-            if path:
-                os.startfile(path)
+            if path and open_file(path):
                 opened += 1
         return opened
 
@@ -884,8 +941,7 @@ class Api:
                 return False
         except (TypeError, ValueError):
             return False
-        os.startfile(real)
-        return True
+        return open_file(real)
 
     def open_place(self, what):
         """gmail, cvs, tracker, runs, data, profile, guide, issues, download. False (with a reason) when missing."""
@@ -897,21 +953,17 @@ class Api:
             return self.open_url({"guide": GUIDE_URL, "issues": ISSUES_URL, "download": DOWNLOAD_PAGE}[what])
         if what == "cvs":
             os.makedirs(os.path.join(HERE, "cvs"), exist_ok=True)
-            os.startfile(os.path.join(HERE, "cvs"))
-            return True
+            return open_file(os.path.join(HERE, "cvs"))
         if what == "data":
-            os.startfile(HERE)
-            return True
+            return open_file(HERE)
         if what == "profile":
             if not os.path.exists(PROFILE):
                 return {"missing": "You have no profile yet. Upload your CV to make one."}
-            subprocess.Popen(["notepad.exe", PROFILE])
-            return True
+            return open_file(PROFILE)
         path, missing = {"tracker": (TRACKER, "No tracker yet: it starts with the first CV, draft or skipped job."),
                          "runs": (bot.RUNS_LOG, "No run log yet: it starts with the first search.")}.get(what, (None, ""))
         if path and os.path.exists(path):
-            os.startfile(path)
-            return True
+            return open_file(path)
         return {"missing": missing or "Nothing to open."}
 
     # ----- AI model -----
@@ -1028,31 +1080,35 @@ class Api:
         write_config(new)
         return {"ok": True}
 
-    # ----- Auto-run (Windows Task Scheduler) -----
+    # ----- Auto-run (cron) -----
 
     def autorun_state(self):
-        try:
-            r = subprocess.run(["schtasks", "/Query", "/TN", TASK, "/FO", "CSV", "/NH"], capture_output=True,
-                               text=True, creationflags=NO_WINDOW, timeout=15)
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        if r.returncode:
-            return None
-        return "off" if "Disabled" in r.stdout else "on"
+        """"on", "off" (set up but paused), or None (never set up, or cron is not installed)."""
+        lines = crontab_lines()
+        for line in lines or []:
+            if line.endswith(CRON_TAG):
+                return "off" if line.lstrip().startswith("#") else "on"
+        return None
 
     def set_autorun(self, on):
-        """Create the 30-minute task the first time, then turn it on or off."""
-        s = self.autorun_state()
-        if s is None:
+        """Add the 30-minute cron line the first time, then comment it in or out."""
+        lines = crontab_lines()
+        if lines is None:
+            return {"error": "cron is not installed, so Auto-run is not available. Install it "
+                             "(for example: sudo apt install cron) and try again.", "state": None}
+        mine = [i for i, line in enumerate(lines) if line.endswith(CRON_TAG)]
+        entry = f"*/30 * * * * {CRON_RUN} {CRON_TAG}"
+        if not mine:
             if not on:
                 return {"ok": True, "state": None}
-            cmd = ["schtasks", "/Create", "/TN", TASK, "/SC", "MINUTE", "/MO", "30", "/TR", TASK_RUN, "/F"]
+            lines.append(entry)
         else:
-            cmd = ["schtasks", "/Change", "/TN", TASK, "/ENABLE" if on else "/DISABLE"]
-        r = subprocess.run(cmd, capture_output=True, text=True, creationflags=NO_WINDOW, timeout=15)
-        if r.returncode:
-            return {"error": (r.stderr or r.stdout).strip() or "Windows could not change the Auto-run task.",
-                    "state": self.autorun_state()}
+            lines[mine[0]] = entry if on else "#" + entry  # the first line is the one that counts; the rest are stray
+            for i in reversed(mine[1:]):
+                del lines[i]
+        error = write_crontab(lines)
+        if error:
+            return {"error": error, "state": self.autorun_state()}
         return {"ok": True, "state": self.autorun_state()}
 
     # ----- updates -----
@@ -1063,30 +1119,9 @@ class Api:
         if newer:
             self._new_tag = tag
         return {"latest": tag, "newer": newer, "current": bot.VERSION, "reachable": tag is not None,
-                "frozen": FROZEN}
+                "frozen": False}
 
     def update_now(self):
-        """Download the new installer, run it silently and close: it installs over this copy and reopens Job
-        Hunter. Running from source there is no installer, so the download page opens instead."""
-        if not FROZEN:
-            self.open_url(DOWNLOAD_PAGE)
-            return {"state": "source"}
-
-        def work():
-            try:
-                path = download_setup(lambda pct: self._emit("update", {"state": "downloading", "pct": pct}))
-            except (OSError, ValueError) as e:
-                self._emit("update", {"state": "failed", "error": str(e)})
-                return
-            self._emit("update", {"state": "installing"})
-            if self._running():
-                self.stop()
-            # /UPDATE tells the installer to open Job Hunter again when it is done (see JobHunter.iss).
-            subprocess.Popen([path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS",
-                              "/NOCANCEL", "/UPDATE"], close_fds=True)
-            time.sleep(0.8)
-            if self._window:
-                self._window.destroy()
-
-        threading.Thread(target=work, daemon=True).start()
-        return {"state": "downloading"}
+        """There is no installer on Linux: open the project page, where the newest version is (git pull)."""
+        self.open_url(DOWNLOAD_PAGE)
+        return {"state": "source"}

@@ -44,16 +44,13 @@ import urllib.request
 import urllib.robotparser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Your files (config, profile, CVs, tracker) live next to the scripts. The installed JobHunter.exe sits in a
-# read-only program folder, so it keeps them in %APPDATA%\Job Hunter instead.
-FROZEN = getattr(sys, "frozen", False)
-# JOBHUNTER_HOME overrides both: a portable copy, or tests that must not touch your real files.
-HERE = os.environ.get("JOBHUNTER_HOME") or (
-    os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "Job Hunter") if FROZEN
-    else os.path.dirname(os.path.abspath(__file__)))
+# Your files (config, profile, CVs, tracker) live next to the scripts.
+# JOBHUNTER_HOME overrides that: keep them somewhere else (e.g. ~/.local/share/job-hunter), or tests that must not
+# touch your real files.
+HERE = os.environ.get("JOBHUNTER_HOME") or os.path.dirname(os.path.abspath(__file__))
 os.makedirs(HERE, exist_ok=True)
 CODE = os.path.dirname(os.path.abspath(__file__))  # bot.py and cv.py
-VERSION = "2.0.0"  # installer/build.ps1 checks that the release tag matches
+VERSION = "2.0.0"
 REPO = "Ahsan483/job-hunter"
 UA = {"User-Agent": f"Mozilla/5.0 (compatible; JobHunter/{VERSION}; +https://github.com/{REPO})"}
 MIN_GAP = 1.5  # seconds between two requests to the same site
@@ -443,7 +440,7 @@ def parse_date(v):
     try:
         if isinstance(v, (int, float)) or str(v).isdigit():
             ts = int(v)
-            if ts > 10 ** 11:  # milliseconds; on Windows fromtimestamp() raises OSError for these
+            if ts > 10 ** 11:  # milliseconds; fromtimestamp() raises for these
                 ts //= 1000
             d = dt.datetime.fromtimestamp(ts, dt.timezone.utc)
         else:
@@ -1637,9 +1634,8 @@ def run_cv_py(data, json_path, pdf, *flags):
         json.dump(data, f, indent=1, ensure_ascii=False)
     if os.path.exists(pdf):
         os.remove(pdf)
-    cmd = [sys.executable, "--cv"] if FROZEN else [sys.executable, "-I", os.path.join(CODE, "cv.py")]
-    r = subprocess.run([*cmd, *flags, json_path, pdf], capture_output=True, text=True, timeout=300,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    cmd = [sys.executable, "-I", os.path.join(CODE, "cv.py")]
+    r = subprocess.run([*cmd, *flags, json_path, pdf], capture_output=True, text=True, timeout=300)
     if not os.path.exists(pdf):
         raise RuntimeError("Could not make the PDF: " + (r.stderr or r.stdout).strip()[-300:])
     return pdf
@@ -1717,7 +1713,7 @@ def load_config():
             with open(path, encoding="utf-8-sig") as f:
                 cfg.update(json.load(f))
         except ValueError as e:
-            raise RuntimeError(f"config.json is not valid JSON ({e}). Fix it in Notepad, or delete it and enter "
+            raise RuntimeError(f"config.json is not valid JSON ({e}). Fix it in a text editor, or delete it and enter "
                                "your keys again in the window.") from None
     for k in NUMBERS:  # a hand-edited "3" or "" must not break the run
         try:
@@ -1749,21 +1745,13 @@ def check_config(cfg, gmail=False):
 
 
 def pid_alive(pid):
-    if os.name != "nt":
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
-    import ctypes  # os.kill on Windows would terminate the process, so ask for its exit code instead
-    k32 = ctypes.windll.kernel32
-    h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not h:
+    try:
+        os.kill(pid, 0)  # signal 0 only checks that the process exists
+        return True
+    except PermissionError:
+        return True  # it exists, but belongs to another user
+    except OSError:
         return False
-    code = ctypes.c_ulong()
-    k32.GetExitCodeProcess(h, ctypes.byref(code))
-    k32.CloseHandle(h)
-    return code.value == 259  # STILL_ACTIVE
 
 
 def take_lock():

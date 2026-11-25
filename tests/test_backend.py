@@ -1,11 +1,12 @@
 """What the window does (backend.py), on a temporary folder. No run, browser, dialog or window is started."""
 import contextlib
 import csv
-import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -234,7 +235,7 @@ class Window(Base):
         inside = os.path.join(self.dir, "cvs", "a.pdf")
         os.makedirs(os.path.dirname(inside))
         open(inside, "wb").close()
-        with mock.patch.object(backend.os, "startfile", create=True) as start:
+        with mock.patch.object(backend, "open_file", return_value=True) as start:
             self.assertTrue(self.api.open_path(inside))
             self.assertFalse(self.api.open_path(os.path.join(os.path.dirname(self.dir), "x.pdf")))
             self.assertFalse(self.api.open_path(None))
@@ -260,39 +261,10 @@ class Window(Base):
             self.assertFalse(self.api.check_update()["reachable"])
         self.assertGreater(backend.version_tuple("v1.10.0"), backend.version_tuple("1.9.9"))
 
-    def test_one_click_update(self):
-        window = mock.Mock()
-        self.api._window = window
-        with mock.patch.object(backend, "FROZEN", True), \
-                mock.patch.object(backend, "download_setup", return_value="C:\\t\\JobHunterSetup-update.exe"), \
-                mock.patch.object(backend.time, "sleep"):
-            self.assertEqual(self.api.update_now(), {"state": "downloading"})
-            backend.threading.Thread.call_args.kwargs["target"]()
-        args = self.popen.call_args.args[0]
-        self.assertEqual(args[0], "C:\\t\\JobHunterSetup-update.exe")
-        self.assertIn("/SILENT", args)
-        self.assertIn("/UPDATE", args)  # the installer opens Job Hunter again
-        window.destroy.assert_called_once()
-
     def test_update_from_source_opens_the_download_page(self):
-        with mock.patch.object(backend, "FROZEN", False), mock.patch.object(backend.webbrowser, "open") as browser:
+        with mock.patch.object(backend.webbrowser, "open") as browser:
             self.assertEqual(self.api.update_now(), {"state": "source"})
         browser.assert_called_once_with(backend.DOWNLOAD_PAGE)
-
-    def test_update_download_must_be_an_installer(self):
-        class Answer(io.BytesIO):
-            headers = {"Content-Length": "12"}
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-        with mock.patch.object(backend.urllib.request, "urlopen", return_value=Answer(b"<html>404</h")), \
-                mock.patch.object(backend.tempfile, "gettempdir", return_value=self.dir):
-            with self.assertRaises(ValueError):
-                backend.download_setup(lambda pct: None)
 
 
 class UsagePing(Base):
@@ -383,8 +355,113 @@ class LogLines(unittest.TestCase):
         self.assertEqual(backend.parse_line("FOUND {broken")["type"], "text")
 
     def test_saved_files_become_links(self):
-        e = backend.parse_line(r"CV saved: C:\Users\me\AppData\Roaming\Job Hunter\cvs\Jane-CV-acme.pdf")
-        self.assertEqual((e["tone"], e["files"]), ("good", [r"C:\Users\me\AppData\Roaming\Job Hunter\cvs\Jane-CV-acme.pdf"]))
+        path = "/home/me/job hunter/cvs/Jane-CV-acme.pdf"
+        e = backend.parse_line(f"CV saved: {path} (fit 80)")
+        self.assertEqual((e["tone"], e["files"]), ("good", [path]))
+
+    def test_urls_are_not_taken_for_saved_files(self):
+        e = backend.parse_line("Remotive answered with https://remotive.com/api/jobs.json and nothing else")
+        self.assertEqual(e["files"], [])
+
+
+class Processes(unittest.TestCase):
+    def test_lock_owner_must_be_a_bot_process(self):
+        with tempfile.TemporaryDirectory() as d:
+            lock = os.path.join(d, "bot.lock")
+            with open(lock, "w", encoding="utf-8") as f:
+                f.write("4242")
+            with mock.patch.object(backend, "LOCK", lock):
+                with mock.patch.object(backend, "process_command", return_value=["python3", "-I", "/x/bot.py"]):
+                    self.assertEqual(backend.lock_owner(), 4242)
+                # the PID was reused by some other program
+                with mock.patch.object(backend, "process_command", return_value=["/usr/bin/firefox"]):
+                    self.assertIsNone(backend.lock_owner())
+                with mock.patch.object(backend, "process_command", return_value=[]):
+                    self.assertIsNone(backend.lock_owner())
+            self.assertIsNone(backend.lock_owner())  # no lock file at the default path of the test run
+
+    def test_process_command_of_this_process(self):
+        cmd = backend.process_command(os.getpid())
+        self.assertIn("python", os.path.basename(cmd[0]).lower())
+        self.assertEqual(backend.process_command(2 ** 22 + 12345), [])  # no such process
+
+    def test_kill_tree_stops_children_too(self):
+        parent = subprocess.Popen([sys.executable, "-c", (
+            "import subprocess, sys, time\n"
+            "kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            "print(kid.pid, flush=True)\n"
+            "time.sleep(60)")], stdout=subprocess.PIPE, text=True)
+        try:
+            kid = int(parent.stdout.readline())
+            self.assertTrue(backend.bot.pid_alive(kid))
+            backend.kill_tree(parent.pid)
+            parent.wait(timeout=5)
+            deadline = time.time() + 5
+            while time.time() < deadline and backend.bot.pid_alive(kid) and not backend.is_zombie(kid):
+                time.sleep(0.05)
+            self.assertFalse(backend.bot.pid_alive(kid) and not backend.is_zombie(kid))
+        finally:
+            parent.stdout.close()
+            if parent.poll() is None:
+                parent.kill()
+
+    def test_open_file_uses_the_desktop_opener(self):
+        with mock.patch.object(backend.shutil, "which", return_value="/usr/bin/xdg-open"), \
+                mock.patch.object(backend.subprocess, "Popen") as popen:
+            self.assertTrue(backend.open_file("/tmp/a.pdf"))
+        self.assertEqual(popen.call_args.args[0], ["/usr/bin/xdg-open", "/tmp/a.pdf"])
+        with mock.patch.object(backend.shutil, "which", return_value=None):
+            self.assertFalse(backend.open_file("/tmp/a.pdf"))
+
+
+class AutoRun(unittest.TestCase):
+    """Auto-run is one tagged line in the user's crontab; every other line must survive."""
+
+    OTHER = ["MAILTO=me@example.com", "0 3 * * * /usr/bin/backup"]
+
+    def api(self, lines):
+        self.saved = None
+
+        def save(new):
+            self.saved = list(new)
+            return None
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(backend, "crontab_lines", side_effect=lambda: list(lines)))
+        stack.enter_context(mock.patch.object(backend, "write_crontab", side_effect=save))
+        return backend.Api()
+
+    def test_state(self):
+        line = f"*/30 * * * * {backend.CRON_RUN} {backend.CRON_TAG}"
+        self.assertIsNone(self.api(self.OTHER).autorun_state())
+        self.assertEqual(self.api(self.OTHER + [line]).autorun_state(), "on")
+        self.assertEqual(self.api(self.OTHER + ["#" + line]).autorun_state(), "off")
+
+    def test_turn_on_adds_one_line_and_keeps_the_others(self):
+        api = self.api(self.OTHER)
+        api.set_autorun(True)
+        self.assertEqual(self.saved[:2], self.OTHER)
+        self.assertEqual(len(self.saved), 3)
+        self.assertTrue(self.saved[2].startswith("*/30 * * * * "))
+        self.assertTrue(self.saved[2].endswith(backend.CRON_TAG))
+        self.assertIn("bot.py", self.saved[2])
+
+    def test_pause_and_resume(self):
+        line = f"*/30 * * * * {backend.CRON_RUN} {backend.CRON_TAG}"
+        self.api(self.OTHER + [line]).set_autorun(False)
+        self.assertEqual(self.saved, self.OTHER + ["#" + line])
+        self.api(self.OTHER + ["#" + line]).set_autorun(True)
+        self.assertEqual(self.saved, self.OTHER + [line])
+
+    def test_turning_off_what_was_never_on_changes_nothing(self):
+        self.assertEqual(self.api(self.OTHER).set_autorun(False), {"ok": True, "state": None})
+        self.assertIsNone(self.saved)
+
+    def test_without_cron_it_says_so(self):
+        with mock.patch.object(backend, "crontab_lines", return_value=None):
+            r = backend.Api().set_autorun(True)
+        self.assertIn("cron is not installed", r["error"])
+        self.assertIsNone(r["state"])
 
 
 if __name__ == "__main__":

@@ -20,14 +20,14 @@ python -I -m unittest discover -s tests   # the tests; GitHub Actions runs them 
 
 ## Good first contributions
 - Add a new remote job source (one function in `bot.py` that returns normalised jobs).
-- Linux / macOS support (scheduler, PDF export, GUI).
+- macOS support (scheduler, PDF export, GUI).
 - Better application-email extraction from careers pages.
 - More unit tests in `tests/` (each job source's parser, with a saved sample response).
 - Translations of the README.
 
 ## Releasing
 1. Set `VERSION` in `bot.py` (the window compares it with the latest release to offer updates).
-2. `git tag v<VERSION> && git push origin v<VERSION>`. The Release workflow builds the installer and refuses a tag that does not match `VERSION`.
+2. `git tag v<VERSION> && git push origin v<VERSION>`. Make sure the tag matches `VERSION`.
 
 ## Pull requests
 1. Fork and create a branch.

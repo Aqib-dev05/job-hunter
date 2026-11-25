@@ -31,6 +31,3 @@ venv/
 credentials*.json
 token*.json
 client_secret*.json
-
-# Installer build output (installer/build.ps1)
-build/

@@ -13,9 +13,10 @@ labels: bug
 2.
 
 **Environment**
-- Windows version:
+- Linux distribution and version (`lsb_release -d`):
 - Python version (`python --version`):
-- Edge installed? (yes/no)
+- Chrome or Chromium installed? (yes/no)
+- GUI toolkit: GTK or Qt, and the desktop (X11 or Wayland):
 
 **Last lines of `runs.log`** (remove any email addresses, keys or personal details)
 ```

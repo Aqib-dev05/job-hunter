@@ -1,12 +1,11 @@
 # Job Hunter: Free AI Remote Job Search Bot (Python, Gemini, Gmail Drafts)
 
-**Job Hunter** is a free, open-source **remote job search bot with a desktop GUI** for Windows. It searches 19 job sites and 150+ company career pages at once (plus Google, for LinkedIn and Indeed posts), filters by your keywords, job age, work type (remote, hybrid, on-site) and where the job is open (worldwide, your country, countries you pick, or with visa sponsorship), finds the **recruiter or company email**, and uses **Google Gemini (free tier)** to write a **tailored ATS-friendly CV (PDF), cover letter and application email** for each job, in any field: software, finance, sales, SEO, support, design, writing, HR and more. It then saves the email as a **Gmail draft**. It never sends anything on its own: you read each draft and press Send yourself.
+**Job Hunter** is a free, open-source **remote job search bot with a desktop GUI** for Linux. It searches 19 job sites and 150+ company career pages at once (plus Google, for LinkedIn and Indeed posts), filters by your keywords, job age, work type (remote, hybrid, on-site) and where the job is open (worldwide, your country, countries you pick, or with visa sponsorship), finds the **recruiter or company email**, and uses **Google Gemini (free tier)** to write a **tailored ATS-friendly CV (PDF), cover letter and application email** for each job, in any field: software, finance, sales, SEO, support, design, writing, HR and more. It then saves the email as a **Gmail draft**. It never sends anything on its own: you read each draft and press Send yourself.
 
-[![Download for Windows](https://img.shields.io/badge/download-JobHunterSetup.exe-2563eb.svg)](https://github.com/Ahsan483/job-hunter/releases/latest/download/JobHunterSetup.exe)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6.svg)](#requirements-running-from-source)
-[![No pip packages](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](#requirements-running-from-source)
+[![Platform: Linux](https://img.shields.io/badge/platform-Linux-FCC624.svg)](#requirements)
+[![No pip packages](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](#requirements)
 [![Free Gemini API](https://img.shields.io/badge/AI-Gemini%20free%20tier-8E75B2.svg)](https://aistudio.google.com/app/apikey)
 
 > **Watch the 1-minute demo:** https://www.youtube.com/watch?v=4s38kwQLMh4
@@ -28,37 +27,49 @@ Good for developers and freelancers looking for **remote jobs from Pakistan, Ind
 - **Upload your CV** once (PDF, Word, text, or even a photo/scan) and Gemini turns it into your profile. Works without work experience too, for students and career changers.
 - **Track your applications:** mark a job as applied, reopen the CV made for it, or copy its cover letter into an application form.
 - **Tells you when an update is out**, with a getting-started checklist and a hint on every button.
-- **Auto-run every 30 minutes** with Windows Task Scheduler.
+- **Auto-run every 30 minutes** with cron.
 - **Uses only free Gemini models** and switches to another model when one runs out of free quota.
 
-## Download for Windows (easiest)
+## Quick start (Linux)
 
-1. Download **[JobHunterSetup.exe](https://github.com/Ahsan483/job-hunter/releases/latest/download/JobHunterSetup.exe)** (or from [codeprojectsofficial.com/tools/job-hunter](https://www.codeprojectsofficial.com/tools/job-hunter)).
-2. Run it. If Windows shows **"Windows protected your PC"**, click **More info → Run anyway** (the installer is not code-signed yet).
-3. Job Hunter opens and asks for your **Gemini API key** and, optionally, a **Gmail app password**. Press **How do I get…?** under each box for step-by-step help, then **Test & save**.
-4. Press **Upload my CV**, then **Find jobs**.
+```
+git clone https://github.com/Ahsan483/job-hunter.git
+cd job-hunter
+./run.sh
+```
 
-No Python needed. Your keys, profile and CVs stay on your computer in `%APPDATA%\Job Hunter`. Uninstalling keeps them.
+The first run sets everything up (a virtual environment in `.venv`, pywebview, and the window's page built with npm), then opens the window. Later runs just open it. Before the first run install the [requirements](#requirements) below: Python, Node.js, a GUI toolkit for the window, and Chrome or Chromium.
 
-To run from source instead, follow the steps below.
+The window asks for your **Gemini API key** and, optionally, a **Gmail app password**. Press **How do I get…?** under each box for step-by-step help, then **Test & save**. Then press **Upload my CV**, then **Find jobs**.
 
-## Requirements (running from source)
+Your keys, profile and CVs stay in the `job-hunter` folder (or in `JOBHUNTER_HOME`, see [Files](#files)).
 
-- Windows 10 or 11
-- [Python 3.10+](https://www.python.org/downloads/). Tick **"Add python.exe to PATH"** when installing.
-- Microsoft Edge (built into Windows; used to make the PDFs)
+## Requirements
+
+- Linux with a desktop (X11 or Wayland)
+- [Python 3.10+](https://www.python.org/downloads/) with `venv` (Debian/Ubuntu: `sudo apt install python3 python3-venv`)
+- A GUI toolkit for the window. The easiest is GTK + WebKit:
+  - Debian / Ubuntu: `sudo apt install python3-gi gir1.2-webkit2-4.1`
+  - Fedora: `sudo dnf install python3-gobject webkit2gtk4.1`
+  - Arch: `sudo pacman -S python-gobject webkit2gtk-4.1`
+  - Or Qt, from pip: put `pywebview[qt]` in `requirements.txt` instead of `pywebview`
+- Google Chrome or Chromium, used to make the PDF CVs (`sudo apt install chromium`). Set `JOBHUNTER_BROWSER` to a browser's path if yours is somewhere unusual. The Snap version of Chromium cannot write the PDFs: use the `.deb` of Chrome or Chromium instead.
 - [Node.js 20+](https://nodejs.org) to build the window once
+- `cron`, only for Auto-run (`sudo apt install cron`)
+- `xdg-utils` (`xdg-open`) so the **Open** menu can open your CVs, files and folders
 - A free Gemini API key
 - A Gmail account, only if you want automatic drafts
 
-The bot uses only Python's standard library. The window needs pywebview (it shows the page in Microsoft Edge WebView2, part of Windows):
+The bot itself uses only Python's standard library. `./run.sh` installs pywebview. To do the same by hand:
 ```
-python -m pip install -r requirements.txt
+python3 -m venv --system-site-packages .venv
+.venv/bin/python -m pip install -r requirements.txt
 cd ui
 npm ci
 npm run build
 cd ..
 ```
+(`--system-site-packages` lets the virtual environment see the distribution's GTK bindings.)
 
 ## Install
 
@@ -98,9 +109,9 @@ Every CV, cover letter and email is built **only** from facts in `profile.json`.
 - **Command line:** `python -I bot.py --import-cv my-cv.pdf`
 
 ### 6. Start it
-Double-click **Job Hunter.bat**, or run:
+Run:
 ```
-python -I webapp.py
+./run.sh
 ```
 Press **Find jobs** for a first test. It takes 1-3 minutes and uses no Gemini and no Gmail.
 
@@ -112,14 +123,14 @@ The window has three columns you can resize by dragging the lines between them: 
 - **Find jobs** (F5): searches every job site and lists the matches. Uses no Gemini and no Gmail.
 - **Auto-draft best matches**: Gemini checks the fit of the top matches, writes a tailored CV and email for each, and saves Gmail drafts. Without Gmail it saves the CV, cover letter and email text as files instead.
 - **Stop**: shows up while a run is going, including one started by Auto-run.
-- **Update to vX.Y**: shows up when a newer version is out. One click downloads it, installs it and reopens Job Hunter. Your keys, profile and CVs are kept.
+- **Update to vX.Y**: shows up when a newer version is out. It opens the project page; update with `git pull` and start Job Hunter again. Your keys, profile and CVs are kept.
 - **Auto-run**: sets up and turns on or off the 30-minute schedule (see below).
 - **Open**: your Gmail drafts, your CVs and cover letters, `tracker.csv`, `runs.log`, your profile and the data folder.
 - **Help**: getting started, this guide, report a problem, check for updates, about.
 - **Settings** (gear icon): fit score, draft limits, Gemini call limit and the years-of-experience filter, and your Gmail & Gemini keys.
 
 **Left column**
-- **Upload my CV** / **Replace CV**: rebuilds `profile.json` from your CV (.pdf, .docx, .txt, .md, or a .png/.jpg photo). The old one is kept as `profile.backup-*.json`. **Check or correct my profile** opens it in Notepad.
+- **Upload my CV** / **Replace CV**: rebuilds `profile.json` from your CV (.pdf, .docx, .txt, .md, or a .png/.jpg photo). The old one is kept as `profile.backup-*.json`. **Check or correct my profile** opens it in your default text editor.
 - **Tailor to a job**: paste any job post to get a tailored CV + cover letter.
 - **AI model**: pick a Gemini model, or leave it on Auto. Each model shows whether it works right now; the refresh icon asks Google again.
 - **What to look for**: the filter (see Filters below). **Save & search** saves it (Auto-run uses it too) and searches.
@@ -162,15 +173,7 @@ The defaults look for .NET / C# jobs. Pick a **Job type** or type your own keywo
 
 ## Auto-run every 30 minutes
 
-Press **Set up auto-run** in the window once. It creates a Windows scheduled task named "Remote Job Hunter" that runs every 30 minutes while you are signed in. After that, the same button turns it on and off. Each run searches, tailors up to `max_drafts_per_run` CVs, and saves the drafts. Nothing is ever sent.
-
-## Building the installer
-
-`installer\build.ps1` builds `build\installer\JobHunterSetup.exe` with PyInstaller and [Inno Setup 6](https://jrsoftware.org/isinfo.php):
-```
-powershell -ExecutionPolicy Bypass -File installer\build.ps1 -Version 1.0.0
-```
-Pushing a tag such as `v1.0.0` does the same on GitHub Actions and publishes the installer as a release (`.github/workflows/release.yml`).
+Press **Set up auto-run** in the window once. It adds one line to your crontab (marked `# Remote Job Hunter`) that runs the bot every 30 minutes while the computer is on, even with the window closed. After that, the same button turns it on and off: off comments the line out, and your other crontab lines are never touched. Each run searches, tailors up to `max_drafts_per_run` CVs, and saves the drafts. Nothing is ever sent. If the button says cron is not installed, install it (`sudo apt install cron`) and make sure the service runs (`systemctl enable --now cron`).
 
 ## Command line
 
@@ -185,11 +188,13 @@ python -I -m unittest discover -s tests   # run the tests (no network needed)
 
 | Problem | Fix |
 |---|---|
-| Double-clicking `Job Hunter.bat` does nothing / "Python was not found" | Install Python 3.10+ from python.org and tick "Add python.exe to PATH". Or use the [installer](#download-for-windows-easiest), which needs no Python. |
+| `./run.sh` says Python, venv or Node.js is missing | Install what it names (see [Requirements](#requirements)). |
+| "Job Hunter needs a GUI toolkit" | Install GTK + WebKit or Qt, see [Requirements](#requirements). If you made `.venv` yourself, create it with `--system-site-packages` (`./run.sh` does). |
+| The window is blank or white (often with NVIDIA, or on Wayland) | Start it with `WEBKIT_DISABLE_DMABUF_RENDERER=1 ./run.sh` (or `WEBKIT_DISABLE_COMPOSITING_MODE=1 ./run.sh`). |
 | "Gmail or Gemini is not connected yet" | Press **Settings → Gmail & Gemini keys…** (or fill in `config.json`, install step 4). |
 | "profile.json not found" | Press **Upload my CV**, or copy `profile.example.json` to `profile.json`. |
 | "Another run is in progress" | A run was killed halfway. Wait 25 minutes or delete `bot.lock`. |
-| "Could not make the PDF" / "Microsoft Edge not found" | Restart Windows (to finish a pending Edge update), or update Edge in `edge://settings/help`. If Google Chrome is installed it is used when Edge fails. |
+| "Could not make the PDF" / "Chrome or Chromium not found" | Install Chrome or Chromium (not the Snap version), or set `JOBHUNTER_BROWSER` to its path. The message also shows what the browser itself reported. |
 | "Gmail is not connected" | Gmail is only needed for drafts. Use **CV + cover letter**, or connect Gmail in **Settings → Gmail & Gemini keys…** |
 | "profile.json has a typo" | Press **My profile** and fix the line it names (usually a missing comma or quote), or **Upload my CV** again. |
 | Gmail login fails | Use the 16-letter **app password**, not your normal password, and check that IMAP is on. |
@@ -204,14 +209,14 @@ python -I -m unittest discover -s tests   # run the tests (no network needed)
 | `bot.py` | Job search, Gemini tailoring, Gmail drafts | yes |
 | `webapp.py`, `backend.py`, `ui/` | The window: a React page (`ui/`) shown by pywebview; `backend.py` is everything its buttons do | yes |
 | `cv.py` | Builds the CV / cover letter PDF | yes |
-| `jobhunter.py`, `installer/` | The installed JobHunter.exe and how it is built | yes |
+| `run.sh` | Sets up and starts the window | yes |
 | `tests/` | Unit tests, run by GitHub Actions on every push | yes |
 | `config.example.json`, `profile.example.json` | Templates to copy | yes |
 | `config.json` | Your keys, password and settings | **no** |
 | `profile.json` | Your CV data | **no** |
 | `cvs/`, `tailor/`, `jobs.json`, `tracker.csv`, `runs.log` | Your generated files and history | **no** |
 
-The installed app keeps the files that are not uploaded in `%APPDATA%\Job Hunter` instead of the program folder. To keep them somewhere else (a USB stick, or a test copy), set the environment variable `JOBHUNTER_HOME` to that folder.
+The files that are not uploaded live in the `job-hunter` folder next to the scripts. To keep them somewhere else (for example `~/.local/share/job-hunter`, a USB stick, or a test copy), set the environment variable `JOBHUNTER_HOME` to that folder; the window, Auto-run and the bot all follow it (for Auto-run, set it in the crontab line or in your login profile).
 
 ## Privacy
 
@@ -231,7 +236,7 @@ Job Hunter does not scrape LinkedIn, Indeed, Glassdoor, Wellfound or Google dire
 Yes. The code is MIT-licensed. It uses the free tier of the Google Gemini API, and you use your own key. Gmail drafts are free too.
 
 **Do I need Python?**
-Not with the [Windows installer](#download-for-windows-easiest). Running from source needs Python 3.10+.
+Yes, Python 3.10+. `./run.sh` sets up its own virtual environment, so nothing is installed system-wide except the [requirements](#requirements).
 
 **Can it find remote jobs for Pakistan, India or other regions?**
 Yes. Set **Open to** to *Worldwide + my country* and type your country or region in **My country/region** (for example `Pakistan, South Asia`). Remote jobs that name your region, or that are open worldwide, are kept.
@@ -248,8 +253,8 @@ Gemini is told to use only facts from your `profile.json`, and the bot drops rew
 **Which job sites does it search?**
 Remotive, RemoteOK, Arbeitnow, Himalayas, Jobicy, We Work Remotely, Working Nomads, Remote First Jobs, Real Work From Anywhere, 4 Day Week, Workew, Jobspresso, NoDesk, LaraJobs, VueJobs, Remote Python, Landing.jobs (Europe), Platsbanken (Sweden's public job service), the Hacker News "Who is hiring?" thread, and the career pages of 150+ companies on Greenhouse, Ashby, Lever and SmartRecruiters (Stripe, OpenAI, Anthropic, Cloudflare, Spotify, Canva, Wise, GitLab and more). These career pages are where sites like Wellfound and HiringCafe get most of their listings; Job Hunter reads them at the source. With **Search Google too** on, Gemini also finds posts on LinkedIn, Indeed, Glassdoor and company sites.
 
-**Does it work on Mac or Linux?**
-Currently it targets Windows 10/11 (the GUI, the scheduled task and the Edge PDF export are Windows-specific). Pull requests for other systems are welcome.
+**Does it work on Windows or Mac?**
+This version targets Linux (the window, Auto-run through cron, and the PDF export through Chrome or Chromium). The Windows version, with its installer, is in this repository's git history from before the Linux conversion. Pull requests for macOS are welcome.
 
 **How do I get a free Gemini API key?**
 Create one at https://aistudio.google.com/app/apikey. The window asks for it the first time it opens, with step-by-step help.
@@ -264,7 +269,7 @@ Create one at https://aistudio.google.com/app/apikey. The window asks for it the
 
 ## Contributing
 
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Good first contributions: new job sources, Linux/macOS support, better email extraction, tests, translations.
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Good first contributions: new job sources, macOS support, better email extraction, tests, translations.
 
 ## Support
 

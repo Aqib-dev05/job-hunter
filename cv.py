@@ -22,23 +22,22 @@ import html
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
 
-FROZEN = getattr(sys, "frozen", False)  # the installed JobHunter.exe keeps your files in %APPDATA%\Job Hunter
-HERE = os.environ.get("JOBHUNTER_HOME") or (
-    os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "Job Hunter") if FROZEN
-    else os.path.dirname(os.path.abspath(__file__)))
-# Edge comes with Windows; Chrome is the fallback when Edge is missing or broken (e.g. a half-installed update).
-BROWSERS = [os.path.join(os.environ.get(v, ""), path)
-            for path in (r"Microsoft\Edge\Application\msedge.exe", r"Google\Chrome\Application\chrome.exe")
-            for v in ("ProgramFiles(x86)", "ProgramFiles", "LocalAppData")]
-BROWSERS = [p for p in dict.fromkeys(BROWSERS) if os.path.exists(p)]
+HERE = os.environ.get("JOBHUNTER_HOME") or os.path.dirname(os.path.abspath(__file__))
+# The PDF is printed by a headless Chromium-family browser. JOBHUNTER_BROWSER (a path or a command name) goes first,
+# then whichever of these is installed.
+BROWSER_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge",
+                 "microsoft-edge-stable", "brave-browser")
+BROWSERS = [shutil.which(n) for n in (os.environ.get("JOBHUNTER_BROWSER"), *BROWSER_NAMES) if n]
+BROWSERS = list(dict.fromkeys(p for p in BROWSERS if p))
 
 CSS = """
 @page { size: A4; margin: 14mm 15mm; }
-body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.2pt; color: #1a1a1a; line-height: 1.38; }
+body { font-family: 'Segoe UI', 'Helvetica Neue', Arial, 'Liberation Sans', 'DejaVu Sans', sans-serif; font-size: 10.2pt; color: #1a1a1a; line-height: 1.38; }
 h1 { font-size: 22pt; margin: 0; }
 .title { color: #0f766e; font-weight: 600; font-size: 11.5pt; margin: 2px 0 4px; }
 .contact { font-size: 9pt; color: #444; }
@@ -123,13 +122,16 @@ def build_letter(profile, letter):
 
 def print_pdf(html_file, out_pdf):
     """Print the page to PDF with the first browser that manages it. Returns the error when none does."""
-    error = "Microsoft Edge not found. Install it from https://www.microsoft.com/edge"
+    error = ("Chrome or Chromium not found. Install one (for example: sudo apt install chromium) or set "
+             "JOBHUNTER_BROWSER to the browser's path.")
+    # Chrome refuses to start as root without --no-sandbox (Docker, some servers).
+    sandbox = ["--no-sandbox"] if hasattr(os, "geteuid") and os.geteuid() == 0 else []
     for exe in BROWSERS:
-        # Its own profile, so an open browser window cannot interfere. Edge can still be writing its Crashpad
+        # Its own profile, so an open browser window cannot interfere. The browser can still be writing its Crashpad
         # folder when it exits: a leftover temp folder must not turn a finished PDF into an error.
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile_dir:
             try:
-                r = subprocess.run([exe, "--headless", "--disable-gpu", "--no-pdf-header-footer",
+                r = subprocess.run([exe, "--headless", "--disable-gpu", "--no-pdf-header-footer", *sandbox,
                                     f"--user-data-dir={profile_dir}", f"--print-to-pdf={out_pdf}",
                                     pathlib.Path(html_file).as_uri()],  # as_uri: folder names with spaces or accents
                                    timeout=120, capture_output=True)
@@ -138,8 +140,8 @@ def print_pdf(html_file, out_pdf):
                 continue
         if os.path.exists(out_pdf):
             return None
-        error = (f"{os.path.basename(exe)} made no PDF (exit code {r.returncode}). Restart Windows to finish any "
-                 "Edge update, or update Edge in edge://settings/help")
+        error = (f"{os.path.basename(exe)} made no PDF (exit code {r.returncode}). "
+                 f"{r.stderr.decode(errors='replace').strip()[-200:]}".strip())
     return error
 
 
